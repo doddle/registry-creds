@@ -1,7 +1,8 @@
+---
 name: golangci-lint
 
 # See: https://github.com/golangci/golangci-lint-action
-#
+
 on:
   push:
     # tags:
@@ -10,7 +11,9 @@ on:
     - develop
     - feature/*
   pull_request:
+    branches:
     - develop
+
 permissions:
   contents: read
   # Optional: allow read access to pull request. Use with `only-new-issues` option.
