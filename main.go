@@ -38,8 +38,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/cenkalti/backoff"
+	"github.com/doddle/registry-creds/k8sutil"
 	flag "github.com/spf13/pflag"
-	"github.com/upmc-enterprises/registry-creds/k8sutil"
 	v1 "k8s.io/client-go/pkg/api/v1"
 )
 
@@ -167,7 +167,7 @@ func generateSecretObj(tokens []AuthToken, isJSONCfg bool, secretName string) (*
 		}
 		configJSON, err := json.Marshal(dockerJSON{Auths: auths})
 		if err != nil {
-			return secret, nil
+			return secret, err
 		}
 		secret.Data = map[string][]byte{".dockerconfigjson": configJSON}
 		secret.Type = "kubernetes.io/dockerconfigjson"
