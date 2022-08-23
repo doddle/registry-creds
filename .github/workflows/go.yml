@@ -1,0 +1,30 @@
+name: Go
+
+on:
+  push:
+    branches:
+    - 'feature/*'
+  pull_request:
+    branches:
+    - develop
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.16
+
+    - name: gotest
+      run: curl https://gotest-release.s3.amazonaws.com/gotest_linux > gotest && chmod +x gotest
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: ./gotest -v ./...
