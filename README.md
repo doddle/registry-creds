@@ -1,4 +1,35 @@
-[![Build Status](https://ci.doddle.com/api/badges/doddle/registry-creds/status.svg?ref=refs/heads/master)](https://ci.doddle.com/doddle/registry-creds)
+> NOTE: this is a fork of [upmc-enterprises/registry-creds](https://github.com/upmc-enterprises/registry-creds/network/members)
+
+Doddle has done the following modifications (or would like to):
+
+
+- [x] reduced the support down to AWS ECR only (its all we need and its easier to maintain this way
+- [x] exit on errors instead of just logging an error and hanging in a useless state (still not ideal)
+- [x] github action to publish a public docker image
+- [x] new `--excluded-namespaces` (comma seperated) flag for namespaces that can be ignored
+- [x] updated the k8s client to automatically select if its inCluster or else default to $KUBECONFIG
+- [ ] removed `vendor/`
+- [ ] logging updated to zap with structured json
+- [x] example `.envrc` for local development
+
+
+
+
+
+
+## running this locally..
+
+You will need 4 env vars to make this run correctly.
+
+- The first two should be self evident `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+- Additionally you'll need to set `awsaccount` to the account ID and `awsregion`
+
+> We suggest using [direnv](https://direnv.net/) for this.. simply `cp .envrc.example .envrc` and edit the file to your needs
+
+
+
+
+---
 
 # Registry Credentials
 
