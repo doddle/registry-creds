@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"testing"
@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/stretchr/testify/assert"
 	"github.com/upmc-enterprises/registry-creds/k8sutil"
-	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
 	v1fake "k8s.io/client-go/kubernetes/typed/core/v1/fake"
@@ -24,17 +23,8 @@ import (
 )
 
 func init() {
-	log.SetOutput(ioutil.Discard)
-	logrus.SetOutput(ioutil.Discard)
-}
-
-func disableRetries() {
-	RetryCfg = RetryConfig{
-		Type:                "simple",
-		NumberOfRetries:     0,
-		RetryDelayInSeconds: 1,
-	}
-	SetupRetryTimer()
+	log.SetOutput(io.Discard)
+	logrus.SetOutput(io.Discard)
 }
 
 func enableShortRetries() {
@@ -228,8 +218,6 @@ func (f *fakeFailingEcrClient) GetAuthorizationToken(input *ecr.GetAuthorization
 	return nil, errors.New("fake error")
 }
 
-type fakeGcrClient struct{}
-
 type fakeTokenSource struct{}
 
 func (f fakeTokenSource) Token() (*oauth2.Token, error) {
@@ -238,48 +226,9 @@ func (f fakeTokenSource) Token() (*oauth2.Token, error) {
 	}, nil
 }
 
-func newFakeTokenSource() fakeTokenSource {
-	return fakeTokenSource{}
-}
-
-func (f *fakeGcrClient) DefaultTokenSource(ctx context.Context, scope ...string) (oauth2.TokenSource, error) {
-	return newFakeTokenSource(), nil
-}
-
-type fakeFailingGcrClient struct{}
-
-func (f *fakeFailingGcrClient) DefaultTokenSource(ctx context.Context, scope ...string) (oauth2.TokenSource, error) {
-	return nil, errors.New("fake error")
-}
-
-type fakeDprClient struct{}
-
-func (f *fakeDprClient) getAuthToken(server, user, password string) (AuthToken, error) {
-	return AuthToken{AccessToken: "fakeToken", Endpoint: "fakeEndpoint"}, nil
-}
-
-type fakeFailingDprClient struct{}
-
-func (f *fakeFailingDprClient) getAuthToken(server, user, password string) (AuthToken, error) {
-	return AuthToken{}, errors.New("fake error")
-}
-
-type fakeACRClient struct{}
-
-func (f *fakeACRClient) getAuthToken(registryURL, clientID, pasword string) (AuthToken, error) {
-	return AuthToken{AccessToken: "fakeACRToken", Endpoint: "fakeACREndpoint"}, nil
-}
-
-type fakeFailingACRClient struct{}
-
-func (f *fakeFailingACRClient) getAuthToken(registryURL, clientID, password string) (AuthToken, error) {
-	return AuthToken{}, errors.New("fake error")
-}
-
 func newKubeUtil() *k8sutil.K8sutilInterface {
 	return &k8sutil.K8sutilInterface{
-		Kclient:    newFakeKubeClient(),
-		MasterHost: "foo",
+		Kclient: newFakeKubeClient(),
 	}
 }
 
@@ -349,32 +298,8 @@ func newFakeEcrClient() *fakeEcrClient {
 	return &fakeEcrClient{}
 }
 
-func newFakeGcrClient() *fakeGcrClient {
-	return &fakeGcrClient{}
-}
-
-func newFakeDprClient() *fakeDprClient {
-	return &fakeDprClient{}
-}
-
-func newFakeACRClient() *fakeACRClient {
-	return &fakeACRClient{}
-}
-
-func newFakeFailingGcrClient() *fakeFailingGcrClient {
-	return &fakeFailingGcrClient{}
-}
-
 func newFakeFailingEcrClient() *fakeFailingEcrClient {
 	return &fakeFailingEcrClient{}
-}
-
-func newFakeFailingDprClient() *fakeFailingDprClient {
-	return &fakeFailingDprClient{}
-}
-
-func newFakeFailingACRClient() *fakeFailingACRClient {
-	return &fakeFailingACRClient{}
 }
 
 func process(t *testing.T, c *controller) {
@@ -388,20 +313,14 @@ func process(t *testing.T, c *controller) {
 func newFakeController() *controller {
 	util := newKubeUtil()
 	ecrClient := newFakeEcrClient()
-	gcrClient := newFakeGcrClient()
-	dprClient := newFakeDprClient()
-	acrClient := newFakeACRClient()
-	c := controller{util, ecrClient, gcrClient, dprClient, acrClient}
+	c := controller{util, ecrClient}
 	return &c
 }
 
 func newFakeFailingController() *controller {
 	util := newKubeUtil()
 	ecrClient := newFakeFailingEcrClient()
-	gcrClient := newFakeFailingGcrClient()
-	dprClient := newFakeFailingDprClient()
-	acrClient := newFakeFailingACRClient()
-	c := controller{util, ecrClient, gcrClient, dprClient, acrClient}
+	c := controller{util, ecrClient}
 	return &c
 }
 
@@ -438,26 +357,9 @@ func assertSecretPresent(t *testing.T, secrets []v1.LocalObjectReference, name s
 
 func assertAllSecretsPresent(t *testing.T, secrets []v1.LocalObjectReference) {
 	assertSecretPresent(t, secrets, *argAWSSecretName)
-	assertSecretPresent(t, secrets, *argDPRSecretName)
-	assertSecretPresent(t, secrets, *argGCRSecretName)
-	assertSecretPresent(t, secrets, *argACRSecretName)
 }
 
 func assertAllExpectedSecrets(t *testing.T, c *controller) {
-	// Test GCR
-	for _, ns := range []string{"namespace1", "namespace2"} {
-		secret, err := c.k8sutil.GetSecret(ns, *argGCRSecretName)
-		assert.Nil(t, err)
-		assert.Equal(t, *argGCRSecretName, secret.Name)
-		assert.Equal(t, map[string][]byte{
-			".dockercfg": []byte(fmt.Sprintf(dockerCfgTemplate, "fakeEndpoint", "fakeToken")),
-		}, secret.Data)
-		assert.Equal(t, v1.SecretType("kubernetes.io/dockercfg"), secret.Type)
-	}
-
-	_, err := c.k8sutil.GetSecret("kube-system", *argGCRSecretName)
-	assert.NotNil(t, err)
-
 	// Test AWS
 	for _, ns := range []string{"namespace1", "namespace2"} {
 		secret, err := c.k8sutil.GetSecret(ns, *argAWSSecretName)
@@ -467,29 +369,8 @@ func assertAllExpectedSecrets(t *testing.T, c *controller) {
 		assert.Equal(t, v1.SecretType("kubernetes.io/dockerconfigjson"), secret.Type)
 	}
 
-	_, err = c.k8sutil.GetSecret("kube-system", *argAWSSecretName)
+	_, err := c.k8sutil.GetSecret("kube-system", *argAWSSecretName)
 	assert.NotNil(t, err)
-
-	// Test Azure Container Registry support
-	for _, ns := range []string{"namespace1", "namespace2"} {
-		secret, err := c.k8sutil.GetSecret(ns, *argACRSecretName)
-		assert.Nil(t, err)
-		assert.Equal(t, *argACRSecretName, secret.Name)
-		assertDockerJSONContains(t, "fakeACREndpoint", "fakeACRToken", secret)
-		assert.Equal(t, v1.SecretType("kubernetes.io/dockerconfigjson"), secret.Type)
-	}
-
-	_, err = c.k8sutil.GetSecret("kube-system", *argACRSecretName)
-	assert.NotNil(t, err)
-
-	// Verify that all expected secrets have been created in all namespaces
-	serviceAccount, err := c.k8sutil.GetServiceAccount("namespace1", "default")
-	assert.Nil(t, err)
-	assertAllSecretsPresent(t, serviceAccount.ImagePullSecrets)
-
-	serviceAccount, err = c.k8sutil.GetServiceAccount("namespace2", "default")
-	assert.Nil(t, err)
-	assertAllSecretsPresent(t, serviceAccount.ImagePullSecrets)
 }
 
 func assertExpectedSecretNumber(t *testing.T, c *controller, n int) {
@@ -501,7 +382,6 @@ func assertExpectedSecretNumber(t *testing.T, c *controller, n int) {
 }
 
 func TestProcessOnce(t *testing.T) {
-	*argGCRURL = "fakeEndpoint"
 	awsAccountIDs = []string{""}
 	c := newFakeController()
 
@@ -511,7 +391,6 @@ func TestProcessOnce(t *testing.T) {
 }
 
 func TestProcessTwice(t *testing.T) {
-	*argGCRURL = "fakeEndpoint"
 	c := newFakeController()
 
 	process(t, c)
@@ -521,22 +400,11 @@ func TestProcessTwice(t *testing.T) {
 	assertAllExpectedSecrets(t, c)
 
 	// Verify that secrets have not been created twice
-	assertExpectedSecretNumber(t, c, 4)
+	assertExpectedSecretNumber(t, c, 1)
 }
 
 func TestProcessWithExistingSecrets(t *testing.T) {
-	*argGCRURL = "fakeEndpoint"
 	c := newFakeController()
-
-	secretGCR := &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
-			Name: *argGCRSecretName,
-		},
-		Data: map[string][]byte{
-			".dockercfg": []byte("some other config"),
-		},
-		Type: "some other type",
-	}
 
 	secretAWS := &v1.Secret{
 		ObjectMeta: v1.ObjectMeta{
@@ -548,28 +416,13 @@ func TestProcessWithExistingSecrets(t *testing.T) {
 		Type: "some other type",
 	}
 
-	secretDPR := &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
-			Name: *argDPRSecretName,
-		},
-		Data: map[string][]byte{
-			".dockerconfigjson": []byte("some other config"),
-		},
-		Type: "some other type",
-	}
-
-	secretACR := &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
-			Name: *argACRSecretName,
-		},
-		Data: map[string][]byte{
-			".dockerconfigjson": []byte("some other config"),
-		},
-		Type: "some other type",
-	}
-
 	for _, ns := range []string{"namespace1", "namespace2"} {
-		for _, secret := range []*v1.Secret{secretGCR, secretAWS, secretDPR, secretACR} {
+		for _, secret := range []*v1.Secret{
+			//secretGCR,
+			secretAWS,
+			//secretDPR,
+			//secretACR,
+		} {
 			err := c.k8sutil.CreateSecret(ns, secret)
 			assert.Nil(t, err)
 		}
@@ -578,24 +431,8 @@ func TestProcessWithExistingSecrets(t *testing.T) {
 	process(t, c)
 
 	assertAllExpectedSecrets(t, c)
-	assertExpectedSecretNumber(t, c, 4)
+	assertExpectedSecretNumber(t, c, 1)
 }
-
-// func TestProcessNoDefaultServiceAccount(t *testing.T) {
-// 	util := newKubeUtil()
-// 	ecrClient := newFakeEcrClient()
-// 	gcrClient := newFakeGcrClient()
-// 	testConfig := providerConfig{true, true}
-// 	c := &controller{util, ecrClient, gcrClient, testConfig}
-
-// 	err := c.k8sutil.DeleteServiceAccounts("namespace1").Delete("default")
-// 	assert.Nil(t, err)
-// 	err = c.k8sutil.ServiceAccounts("namespace2").Delete("default")
-// 	assert.Nil(t, err)
-
-// 	err = c.process()
-// 	assert.NotNil(t, err)
-// }
 
 func TestProcessWithExistingImagePullSecrets(t *testing.T) {
 	c := newFakeController()
@@ -631,15 +468,6 @@ func TestAwsRegionFromEnv(t *testing.T) {
 	assert.Equal(t, expectedRegion, *argAWSRegion)
 }
 
-func TestGcrURLFromEnv(t *testing.T) {
-	expectedURL := "http://test.me"
-
-	_ = os.Setenv("gcrurl", "http://test.me")
-	validateParams()
-
-	assert.Equal(t, expectedURL, *argGCRURL)
-}
-
 func TestFailingGcrPassingEcrStillSucceeds(t *testing.T) {
 	enableShortRetries()
 
@@ -650,24 +478,14 @@ func TestFailingGcrPassingEcrStillSucceeds(t *testing.T) {
 	process(t, c)
 }
 
-func TestPassingGcrPassingEcrStillSucceeds(t *testing.T) {
-	enableShortRetries()
-
-	awsAccountIDs = []string{""}
-	c := newFakeFailingController()
-	c.gcrClient = newFakeGcrClient()
-
-	process(t, c)
-}
-
 func TestControllerGenerateSecretsSimpleRetryOnError(t *testing.T) {
 	// enable log output for this test
 	log.SetOutput(os.Stdout)
 	logrus.SetOutput(os.Stdout)
 	// disable log output when the test has completed
 	defer func() {
-		log.SetOutput(ioutil.Discard)
-		logrus.SetOutput(ioutil.Discard)
+		log.SetOutput(io.Discard)
+		logrus.SetOutput(io.Discard)
 	}()
 	enableShortRetries()
 
@@ -683,8 +501,8 @@ func TestControllerGenerateSecretsExponentialRetryOnError(t *testing.T) {
 	logrus.SetOutput(os.Stdout)
 	// disable log output when the test has completed
 	defer func() {
-		log.SetOutput(ioutil.Discard)
-		logrus.SetOutput(ioutil.Discard)
+		log.SetOutput(io.Discard)
+		logrus.SetOutput(io.Discard)
 	}()
 	RetryCfg = RetryConfig{
 		Type:                "exponential",
