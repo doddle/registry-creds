@@ -3,7 +3,6 @@ package k8sutil
 import (
 	"context"
 	"k8s.io/apimachinery/pkg/fields"
-	"log"
 	"os"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
-	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
+	_ "k8s.io/client-go/plugin/pkg/client/auth" // allow support for all auth types for users running this locally
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -199,7 +198,6 @@ func (k *KubeUtilInterface) UpdateServiceAccount(namespace string, sa *v1.Servic
 func (k *KubeUtilInterface) WatchNamespaces(resyncPeriod time.Duration, handler func(*v1.Namespace) error) {
 	stopC := make(chan struct{})
 	_, c := cache.NewInformer(
-		// cache.NewListWatchFromClient(k.Kclient.Core().RESTClient(), "namespaces", v1.NamespaceAll, fields.Everything()),
 		cache.NewListWatchFromClient(
 			k.Kclient.Core().RESTClient(),
 			"namespaces",
@@ -211,14 +209,12 @@ func (k *KubeUtilInterface) WatchNamespaces(resyncPeriod time.Duration, handler 
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				if err := handler(obj.(*v1.Namespace)); err != nil {
-					log.Println(err)
-					os.Exit(1)
+					logrus.Fatal(err)
 				}
 			},
 			UpdateFunc: func(_ interface{}, obj interface{}) {
 				if err := handler(obj.(*v1.Namespace)); err != nil {
-					log.Println(err)
-					os.Exit(1)
+					logrus.Fatal(err)
 				}
 			},
 		},

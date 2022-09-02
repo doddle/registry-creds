@@ -6,20 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
 	"log"
 	"os"
 	"testing"
+
+	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/doddle/registry-creds/k8sutil"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	// v1 "k8s.io/client-go/pkg/api/v1"
 	v1 "k8s.io/api/core/v1"
-	//"k8s.io/client-go/pkg/watch"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func init() {
@@ -47,7 +46,7 @@ func (f *fakeKubeClient) Secrets(namespace string) coreType.SecretInterface {
 }
 
 func (f *fakeKubeClient) Core() coreType.CoreV1Interface {
-	return f.Core()
+	return nil
 }
 
 type fakeSecrets struct {
@@ -150,20 +149,6 @@ func (f *fakeSecrets) Get(ctx context.Context, name string, opts metav1.GetOptio
 type fakeEcrClient struct{}
 
 func (f *fakeEcrClient) GetAuthorizationToken(input *ecr.GetAuthorizationTokenInput) (*ecr.GetAuthorizationTokenOutput, error) {
-	if len(input.RegistryIds) == 2 {
-		return &ecr.GetAuthorizationTokenOutput{
-			AuthorizationData: []*ecr.AuthorizationData{
-				{
-					AuthorizationToken: aws.String("fakeToken1"),
-					ProxyEndpoint:      aws.String("fakeEndpoint1"),
-				},
-				{
-					AuthorizationToken: aws.String("fakeToken2"),
-					ProxyEndpoint:      aws.String("fakeEndpoint2"),
-				},
-			},
-		}, nil
-	}
 	return &ecr.GetAuthorizationTokenOutput{
 		AuthorizationData: []*ecr.AuthorizationData{
 			{
@@ -285,11 +270,9 @@ func TestGetECRAuthorizationKey(t *testing.T) {
 	tokens, err := c.getECRAuthorizationKey()
 
 	assert.Nil(t, err)
-	assert.Equal(t, 2, len(tokens))
-	assert.Equal(t, "fakeToken1", tokens[0].AccessToken)
-	assert.Equal(t, "fakeEndpoint1", tokens[0].Endpoint)
-	assert.Equal(t, "fakeToken2", tokens[1].AccessToken)
-	assert.Equal(t, "fakeEndpoint2", tokens[1].Endpoint)
+	assert.Equal(t, 1, len(tokens))
+	assert.Equal(t, "fakeToken", tokens[0].AccessToken)
+	assert.Equal(t, "fakeEndpoint", tokens[0].Endpoint)
 }
 
 func assertDockerJSONContains(t *testing.T, endpoint, token string, secret *v1.Secret) {
