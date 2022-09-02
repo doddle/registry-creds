@@ -6,20 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"k8s.io/apimachinery/pkg/watch"
+	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
 	"log"
 	"os"
 	"testing"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/doddle/registry-creds/k8sutil"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
-	v1fake "k8s.io/client-go/kubernetes/typed/core/v1/fake"
 	// v1 "k8s.io/client-go/pkg/api/v1"
 	v1 "k8s.io/api/core/v1"
 	//"k8s.io/client-go/pkg/watch"
@@ -45,87 +42,25 @@ type fakeKubeClient struct {
 	serviceaccounts map[string]*fakeServiceAccounts
 }
 
-type fakeSecrets struct {
-	store map[string]*v1.Secret
-}
-
-type fakeServiceAccounts struct {
-	store map[string]*v1.ServiceAccount
-}
-
-type fakeNamespaces struct {
-	store map[string]v1.Namespace
-}
-
-func (f *fakeKubeClient) Core() coreType.CoreV1Interface {
-	return &v1fake.FakeCoreV1{}
-}
-
 func (f *fakeKubeClient) Secrets(namespace string) coreType.SecretInterface {
 	return f.secrets[namespace]
 }
 
-func (f *fakeKubeClient) Namespaces() coreType.NamespaceInterface {
-	return f.namespaces
+func (f *fakeKubeClient) Core() coreType.CoreV1Interface {
+	return f.Core()
 }
 
-func (f *fakeKubeClient) ServiceAccounts(namespace string) coreType.ServiceAccountInterface {
-	return f.serviceaccounts[namespace]
+type fakeSecrets struct {
+	coreType.SecretInterface
+	store map[string]*v1.Secret
 }
 
-func (f *fakeSecrets) Create(secret *v1.Secret) (*v1.Secret, error) {
-	_, ok := f.store[secret.Name]
-
-	if ok {
-		return nil, fmt.Errorf("secret %v already exists", secret.Name)
-	}
-
-	f.store[secret.Name] = secret
-	return secret, nil
+type fakeServiceAccounts struct {
+	coreType.ServiceAccountInterface
+	store map[string]*v1.ServiceAccount
 }
 
-func (f *fakeSecrets) Update(secret *v1.Secret) (*v1.Secret, error) {
-	_, ok := f.store[secret.Name]
-
-	if !ok {
-		return nil, fmt.Errorf("secret %v not found", secret.Name)
-	}
-
-	f.store[secret.Name] = secret
-	return secret, nil
-}
-
-func (f *fakeSecrets) Get(name string) (*v1.Secret, error) {
-	secret, ok := f.store[name]
-
-	if !ok {
-		return nil, fmt.Errorf("secret with name '%v' not found", name)
-	}
-
-	return secret, nil
-}
-
-func (f *fakeSecrets) Delete(name string, options *metav1.DeleteOptions) error { return nil }
-func (f *fakeSecrets) DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error {
-	return nil
-}
-func (f *fakeSecrets) List(opts metav1.ListOptions) (*v1.SecretList, error)   { return nil, nil }
-func (f *fakeSecrets) Watch(opts metav1.ListOptions) (watch.Interface, error) { return nil, nil }
-func (f *fakeSecrets) Patch(name string, pt api.PatchType, data []byte, subresources ...string) (result *v1.Secret, err error) {
-	return nil, nil
-}
-
-func (f *fakeServiceAccounts) Get(name string) (*v1.ServiceAccount, error) {
-	serviceAccount, ok := f.store[name]
-
-	if !ok {
-		return nil, fmt.Errorf("failed to find service account '%v'", name)
-	}
-
-	return serviceAccount, nil
-}
-
-func (f *fakeServiceAccounts) Update(serviceAccount *v1.ServiceAccount) (*v1.ServiceAccount, error) {
+func (f *fakeServiceAccounts) Update(ctx context.Context, serviceAccount *v1.ServiceAccount, opts metav1.UpdateOptions) (*v1.ServiceAccount, error) {
 	serviceAccount, ok := f.store[serviceAccount.Name]
 
 	if !ok {
@@ -136,15 +71,7 @@ func (f *fakeServiceAccounts) Update(serviceAccount *v1.ServiceAccount) (*v1.Ser
 	return serviceAccount, nil
 }
 
-func (f *fakeServiceAccounts) DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error {
-	return nil
-}
-
-func (f *fakeServiceAccounts) Patch(name string, pt api.PatchType, data []byte, subresources ...string) (result *v1.ServiceAccount, err error) {
-	return nil, nil
-}
-
-func (f *fakeServiceAccounts) Delete(name string, options *metav1.DeleteOptions) error {
+func (f *fakeServiceAccounts) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
 	_, ok := f.store[name]
 
 	if !ok {
@@ -155,17 +82,22 @@ func (f *fakeServiceAccounts) Delete(name string, options *metav1.DeleteOptions)
 	return nil
 }
 
-func (f *fakeServiceAccounts) Create(serviceAccount *v1.ServiceAccount) (*v1.ServiceAccount, error) {
-	return nil, nil
-}
-func (f *fakeServiceAccounts) List(opts metav1.ListOptions) (*v1.ServiceAccountList, error) {
-	return nil, nil
-}
-func (f *fakeServiceAccounts) Watch(opts metav1.ListOptions) (watch.Interface, error) {
-	return nil, nil
+func (f *fakeServiceAccounts) Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.ServiceAccount, error) {
+	serviceAccount, ok := f.store[name]
+
+	if !ok {
+		return nil, fmt.Errorf("failed to find service account '%v'", name)
+	}
+
+	return serviceAccount, nil
 }
 
-func (f *fakeNamespaces) List(opts metav1.ListOptions) (*v1.NamespaceList, error) {
+type fakeNamespaces struct {
+	coreType.NamespaceInterface
+	store map[string]v1.Namespace
+}
+
+func (f *fakeNamespaces) List(ctx context.Context, opts metav1.ListOptions) (*v1.NamespaceList, error) {
 	namespaces := make([]v1.Namespace, 0)
 
 	for _, v := range f.store {
@@ -175,20 +107,45 @@ func (f *fakeNamespaces) List(opts metav1.ListOptions) (*v1.NamespaceList, error
 	return &v1.NamespaceList{Items: namespaces}, nil
 }
 
-func (f *fakeNamespaces) Create(item *v1.Namespace) (*v1.Namespace, error)        { return nil, nil }
-func (f *fakeNamespaces) Get(name string) (result *v1.Namespace, err error)       { return nil, nil }
-func (f *fakeNamespaces) UpdateStatus(*v1.Namespace) (*v1.Namespace, error)       { return nil, nil }
-func (f *fakeNamespaces) Delete(name string, options *metav1.DeleteOptions) error { return nil }
-func (f *fakeNamespaces) DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error {
-	return nil
+func (f *fakeKubeClient) Namespaces() coreType.NamespaceInterface {
+	return f.namespaces
 }
-func (f *fakeNamespaces) Update(item *v1.Namespace) (*v1.Namespace, error)       { return nil, nil }
-func (f *fakeNamespaces) Watch(opts metav1.ListOptions) (watch.Interface, error) { return nil, nil }
-func (f *fakeNamespaces) Finalize(item *v1.Namespace) (*v1.Namespace, error)     { return nil, nil }
-func (f *fakeNamespaces) Patch(name string, pt api.PatchType, data []byte, subresources ...string) (result *v1.Namespace, err error) {
-	return nil, nil
+
+func (f *fakeKubeClient) ServiceAccounts(namespace string) coreType.ServiceAccountInterface {
+	return f.serviceaccounts[namespace]
 }
-func (f *fakeNamespaces) Status(item *v1.Namespace) (*v1.Namespace, error) { return nil, nil }
+
+func (f *fakeSecrets) Create(ctx context.Context, secret *v1.Secret, opts metav1.CreateOptions) (*v1.Secret, error) {
+	_, ok := f.store[secret.Name]
+
+	if ok {
+		return nil, fmt.Errorf("secret %v already exists", secret.Name)
+	}
+
+	f.store[secret.Name] = secret
+	return secret, nil
+}
+
+func (f *fakeSecrets) Update(ctx context.Context, secret *v1.Secret, opts metav1.UpdateOptions) (*v1.Secret, error) {
+	_, ok := f.store[secret.Name]
+
+	if !ok {
+		return nil, fmt.Errorf("secret %v not found", secret.Name)
+	}
+
+	f.store[secret.Name] = secret
+	return secret, nil
+}
+
+func (f *fakeSecrets) Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.Secret, error) {
+	secret, ok := f.store[name]
+
+	if !ok {
+		return nil, fmt.Errorf("secret with name '%v' not found", name)
+	}
+
+	return secret, nil
+}
 
 type fakeEcrClient struct{}
 
