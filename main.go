@@ -284,8 +284,8 @@ func (c *controller) generateSecrets() []*v1.Secret {
 					continue
 				}
 				logrus.Errorf("Error getting secret for provider %s. Tried %d time(s); will not try again until the next refresh cycle. [Err: %s]", secretGenerator.SecretName, tries, err)
-				os.Exit(1)
-				//break
+				// os.Exit(1)
+				break
 			} else {
 				logrus.Infof("Successfully got secret for provider %s after trying %d time(s)", secretGenerator.SecretName, tries)
 				newTokens = tokens
