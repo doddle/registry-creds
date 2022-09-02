@@ -32,15 +32,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/cenkalti/backoff"
 	"github.com/doddle/registry-creds/k8sutil"
+	"github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
-	v1 "k8s.io/client-go/pkg/api/v1"
+	// v1 "k8s.io/client-go/pkg/api/v1"
+	//"k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -151,7 +154,7 @@ func (c *controller) getECRAuthorizationKey() ([]AuthToken, error) {
 
 func generateSecretObj(tokens []AuthToken, isJSONCfg bool, secretName string) (*v1.Secret, error) {
 	secret := &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: secretName,
 		},
 	}
