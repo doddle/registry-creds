@@ -91,7 +91,7 @@ type registryAuth struct {
 }
 
 type controller struct {
-	k8sutil   *k8sutil.K8sutilInterface
+	k8sutil   *k8sutil.KubeUtilInterface
 	ecrClient ecrInterface
 }
 
@@ -119,11 +119,9 @@ func newEcrClient() ecrInterface {
 }
 
 func (c *controller) getECRAuthorizationKey() ([]AuthToken, error) {
-
 	var tokens []AuthToken
-	var regIds []*string
-	regIds = make([]*string, len(awsAccountIDs))
 
+	regIds := make([]*string, len(awsAccountIDs))
 	for i, awsAccountID := range awsAccountIDs {
 		regIds[i] = aws.String(awsAccountID)
 	}
@@ -146,8 +144,8 @@ func (c *controller) getECRAuthorizationKey() ([]AuthToken, error) {
 			AccessToken: *auth.AuthorizationToken,
 			Endpoint:    *auth.ProxyEndpoint,
 		})
-
 	}
+
 	return tokens, nil
 }
 
@@ -171,12 +169,10 @@ func generateSecretObj(tokens []AuthToken, isJSONCfg bool, secretName string) (*
 		}
 		secret.Data = map[string][]byte{".dockerconfigjson": configJSON}
 		secret.Type = "kubernetes.io/dockerconfigjson"
-	} else {
-		if len(tokens) == 1 {
-			secret.Data = map[string][]byte{
-				".dockercfg": []byte(fmt.Sprintf(dockerCfgTemplate, tokens[0].Endpoint, tokens[0].AccessToken))}
-			secret.Type = "kubernetes.io/dockercfg"
-		}
+	} else if len(tokens) == 1 {
+		secret.Data = map[string][]byte{
+			".dockercfg": []byte(fmt.Sprintf(dockerCfgTemplate, tokens[0].Endpoint, tokens[0].AccessToken))}
+		secret.Type = "kubernetes.io/dockercfg"
 	}
 	return secret, nil
 }
@@ -269,7 +265,6 @@ func (c *controller) generateSecrets() []*v1.Secret {
 	maxTries := RetryCfg.NumberOfRetries + 1
 	for _, secretGenerator := range secretGenerators {
 		resetRetryTimer()
-		//logrus.Infof("------------------ [%s] ------------------\n", secretGenerator.SecretName)
 
 		var newTokens []AuthToken
 		tries := 0
@@ -289,7 +284,8 @@ func (c *controller) generateSecrets() []*v1.Secret {
 					continue
 				}
 				logrus.Errorf("Error getting secret for provider %s. Tried %d time(s); will not try again until the next refresh cycle. [Err: %s]", secretGenerator.SecretName, tries, err)
-				break
+				os.Exit(1)
+				//break
 			} else {
 				logrus.Infof("Successfully got secret for provider %s after trying %d time(s)", secretGenerator.SecretName, tries)
 				newTokens = tokens
@@ -313,10 +309,8 @@ func SetupRetryTimer() {
 	switch RetryCfg.Type {
 	case retryTypeSimple:
 		simpleBackoff = backoff.NewConstantBackOff(delayDuration)
-		break
 	case retryTypeExponential:
 		exponentialBackoff = backoff.NewExponentialBackOff()
-		break
 	}
 }
 
@@ -324,10 +318,8 @@ func resetRetryTimer() {
 	switch RetryCfg.Type {
 	case retryTypeSimple:
 		simpleBackoff.Reset()
-		break
 	case retryTypeExponential:
 		exponentialBackoff.Reset()
-		break
 	}
 }
 
@@ -434,32 +426,30 @@ func stringSliceContains(stringSlice []string, searchString string) bool {
 }
 
 func handler(c *controller, ns *v1.Namespace) error {
-	//fmt.Println(c.k8sutil.ExcludedNamespaces)
 	namespace := ns.GetName()
 	if stringSliceContains(c.k8sutil.ExcludedNamespaces, namespace) {
 		logrus.Infof("---------- handler( namespace: %s excluded)", namespace)
 		return nil
-	} else {
-		logrus.Infof("---------- handler( namespace: %s started)", namespace)
-		logrus.Infof("generating credentials for namespace %s", namespace)
-		secrets := c.generateSecrets()
-		logrus.Infof("Got %d refreshed credentials for namespace %s", len(secrets), namespace)
-		for _, secret := range secrets {
-			if *argSkipKubeSystem && namespace == "kube-system" {
-				continue
-			}
-			logrus.Infof("Processing secret for namespace %s, secret %s", ns.Name, secret.Name)
-
-			if err := c.processNamespace(ns, secret); err != nil {
-				logrus.Errorf("error processing secret for namespace %s, secret %s: %s", ns.Name, secret.Name, err)
-				return err
-			}
-
-			logrus.Infof("Finished processing secret for namespace %s, secret %s", ns.Name, secret.Name)
-		}
-		logrus.Infof("Finished refreshing credentials for namespace %s", ns.GetName())
-		return nil
 	}
+	logrus.Infof("---------- handler( namespace: %s started)", namespace)
+	logrus.Infof("generating credentials for namespace %s", namespace)
+	secrets := c.generateSecrets()
+	logrus.Infof("Got %d refreshed credentials for namespace %s", len(secrets), namespace)
+	for _, secret := range secrets {
+		if *argSkipKubeSystem && namespace == "kube-system" {
+			continue
+		}
+		logrus.Infof("Processing secret for namespace %s, secret %s", ns.Name, secret.Name)
+
+		if err := c.processNamespace(ns, secret); err != nil {
+			logrus.Errorf("error processing secret for namespace %s, secret %s: %s", ns.Name, secret.Name, err)
+			return err
+		}
+
+		logrus.Infof("Finished processing secret for namespace %s, secret %s", ns.Name, secret.Name)
+	}
+	logrus.Infof("Finished refreshing credentials for namespace %s", ns.GetName())
+	return nil
 }
 
 func main() {

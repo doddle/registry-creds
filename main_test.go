@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/doddle/registry-creds/k8sutil"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/oauth2"
 	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
 	v1fake "k8s.io/client-go/kubernetes/typed/core/v1/fake"
 	"k8s.io/client-go/pkg/api"
@@ -218,16 +217,8 @@ func (f *fakeFailingEcrClient) GetAuthorizationToken(input *ecr.GetAuthorization
 	return nil, errors.New("fake error")
 }
 
-type fakeTokenSource struct{}
-
-func (f fakeTokenSource) Token() (*oauth2.Token, error) {
-	return &oauth2.Token{
-		AccessToken: "fakeToken",
-	}, nil
-}
-
-func newKubeUtil() *k8sutil.K8sutilInterface {
-	return &k8sutil.K8sutilInterface{
+func newKubeUtil() *k8sutil.KubeUtilInterface {
+	return &k8sutil.KubeUtilInterface{
 		Kclient: newFakeKubeClient(),
 	}
 }
@@ -418,10 +409,7 @@ func TestProcessWithExistingSecrets(t *testing.T) {
 
 	for _, ns := range []string{"namespace1", "namespace2"} {
 		for _, secret := range []*v1.Secret{
-			//secretGCR,
 			secretAWS,
-			//secretDPR,
-			//secretACR,
 		} {
 			err := c.k8sutil.CreateSecret(ns, secret)
 			assert.Nil(t, err)
@@ -441,7 +429,7 @@ func TestProcessWithExistingImagePullSecrets(t *testing.T) {
 		serviceAccount, err := c.k8sutil.GetServiceAccount(ns, "default")
 		assert.Nil(t, err)
 		serviceAccount.ImagePullSecrets = append(serviceAccount.ImagePullSecrets, v1.LocalObjectReference{Name: "someOtherSecret"})
-		err = c.k8sutil.UpdateServiceAccount(ns, serviceAccount)
+		_ = c.k8sutil.UpdateServiceAccount(ns, serviceAccount)
 	}
 
 	process(t, c)
