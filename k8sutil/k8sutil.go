@@ -1,20 +1,22 @@
 package k8sutil
 
 import (
-	"log"
+	"context"
+	"k8s.io/apimachinery/pkg/fields"
 	"os"
 	"time"
 
 	"fmt"
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	coreType "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/pkg/api/v1"
-	"k8s.io/client-go/pkg/fields"
-	"k8s.io/client-go/pkg/util/homedir"
+	_ "k8s.io/client-go/plugin/pkg/client/auth" // allow support for all auth types for users running this locally
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 	"path/filepath"
 )
 
@@ -26,21 +28,20 @@ type KubeInterface interface {
 	Core() coreType.CoreV1Interface
 }
 
-type K8sutilInterface struct {
+type KubeUtilInterface struct {
 	Kclient            KubeInterface
 	ExcludedNamespaces []string
 }
 
 // New creates a new instance of k8sutil
-func New(excludedNamespaces []string) (*K8sutilInterface, error) {
-
+func New(excludedNamespaces []string) (*KubeUtilInterface, error) {
 	client, err := newKubeClient()
 
 	if err != nil {
 		logrus.Fatalf("Could not init Kubernetes client! [%s]", err)
 	}
 
-	k := &K8sutilInterface{
+	k := &KubeUtilInterface{
 		Kclient:            client,
 		ExcludedNamespaces: excludedNamespaces,
 	}
@@ -64,8 +65,27 @@ func findKubeConfig() string {
 	return kubeconfig
 }
 
-func newKubeClient() (KubeInterface, error) {
+type LegacyInterfaceWrapper struct {
+	*kubernetes.Clientset
+}
 
+func (f LegacyInterfaceWrapper) Secrets(namespace string) coreType.SecretInterface {
+	return f.CoreV1().Secrets(namespace)
+}
+
+func (f LegacyInterfaceWrapper) Namespaces() coreType.NamespaceInterface {
+	return f.CoreV1().Namespaces()
+}
+
+func (f LegacyInterfaceWrapper) ServiceAccounts(namespace string) coreType.ServiceAccountInterface {
+	return f.CoreV1().ServiceAccounts(namespace)
+}
+
+func (f LegacyInterfaceWrapper) Core() coreType.CoreV1Interface {
+	return f.CoreV1()
+}
+
+func newKubeClient() (KubeInterface, error) {
 	var client *kubernetes.Clientset
 
 	// we will automatically decide if this is running inside the cluster or on someones laptop
@@ -100,12 +120,14 @@ func newKubeClient() (KubeInterface, error) {
 		}
 	}
 
-	return client, nil
+	return LegacyInterfaceWrapper{
+		client,
+	}, nil
 }
 
 // GetNamespaces returns all namespaces
-func (k *K8sutilInterface) GetNamespaces() (*v1.NamespaceList, error) {
-	namespaces, err := k.Kclient.Namespaces().List(v1.ListOptions{})
+func (k *KubeUtilInterface) GetNamespaces() (*v1.NamespaceList, error) {
+	namespaces, err := k.Kclient.Namespaces().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		logrus.Error("Error getting namespaces: ", err)
 		return nil, err
@@ -115,8 +137,8 @@ func (k *K8sutilInterface) GetNamespaces() (*v1.NamespaceList, error) {
 }
 
 // GetSecret get a secret
-func (k *K8sutilInterface) GetSecret(namespace, secretname string) (*v1.Secret, error) {
-	secret, err := k.Kclient.Secrets(namespace).Get(secretname)
+func (k *KubeUtilInterface) GetSecret(namespace, name string) (*v1.Secret, error) {
+	secret, err := k.Kclient.Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		logrus.Error("Error getting secret: ", err)
 		return nil, err
@@ -126,8 +148,8 @@ func (k *K8sutilInterface) GetSecret(namespace, secretname string) (*v1.Secret, 
 }
 
 // CreateSecret creates a secret
-func (k *K8sutilInterface) CreateSecret(namespace string, secret *v1.Secret) error {
-	_, err := k.Kclient.Secrets(namespace).Create(secret)
+func (k *KubeUtilInterface) CreateSecret(namespace string, secret *v1.Secret) error {
+	_, err := k.Kclient.Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
 
 	if err != nil {
 		logrus.Error("Error creating secret: ", err)
@@ -138,8 +160,8 @@ func (k *K8sutilInterface) CreateSecret(namespace string, secret *v1.Secret) err
 }
 
 // UpdateSecret updates a secret
-func (k *K8sutilInterface) UpdateSecret(namespace string, secret *v1.Secret) error {
-	_, err := k.Kclient.Secrets(namespace).Update(secret)
+func (k *KubeUtilInterface) UpdateSecret(namespace string, secret *v1.Secret) error {
+	_, err := k.Kclient.Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
 
 	if err != nil {
 		logrus.Error("Error updating secret: ", err)
@@ -150,8 +172,8 @@ func (k *K8sutilInterface) UpdateSecret(namespace string, secret *v1.Secret) err
 }
 
 // GetServiceAccount updates a secret
-func (k *K8sutilInterface) GetServiceAccount(namespace, name string) (*v1.ServiceAccount, error) {
-	sa, err := k.Kclient.ServiceAccounts(namespace).Get(name)
+func (k *KubeUtilInterface) GetServiceAccount(namespace, name string) (*v1.ServiceAccount, error) {
+	sa, err := k.Kclient.ServiceAccounts(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 
 	if err != nil {
 		logrus.Error("Error getting service account: ", err)
@@ -162,8 +184,8 @@ func (k *K8sutilInterface) GetServiceAccount(namespace, name string) (*v1.Servic
 }
 
 // UpdateServiceAccount updates a secret
-func (k *K8sutilInterface) UpdateServiceAccount(namespace string, sa *v1.ServiceAccount) error {
-	_, err := k.Kclient.ServiceAccounts(namespace).Update(sa)
+func (k *KubeUtilInterface) UpdateServiceAccount(namespace string, sa *v1.ServiceAccount) error {
+	_, err := k.Kclient.ServiceAccounts(namespace).Update(context.TODO(), sa, metav1.UpdateOptions{})
 
 	if err != nil {
 		logrus.Error("Error updating service account: ", err)
@@ -173,23 +195,26 @@ func (k *K8sutilInterface) UpdateServiceAccount(namespace string, sa *v1.Service
 	return nil
 }
 
-func (k *K8sutilInterface) WatchNamespaces(resyncPeriod time.Duration, handler func(*v1.Namespace) error) {
+func (k *KubeUtilInterface) WatchNamespaces(resyncPeriod time.Duration, handler func(*v1.Namespace) error) {
 	stopC := make(chan struct{})
 	_, c := cache.NewInformer(
-		cache.NewListWatchFromClient(k.Kclient.Core().RESTClient(), "namespaces", v1.NamespaceAll, fields.Everything()),
+		cache.NewListWatchFromClient(
+			k.Kclient.Core().RESTClient(),
+			"namespaces",
+			v1.NamespaceAll,
+			fields.Everything(),
+		),
 		&v1.Namespace{},
 		resyncPeriod,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				if err := handler(obj.(*v1.Namespace)); err != nil {
-					log.Println(err)
-					os.Exit(1)
+					logrus.Fatal(err)
 				}
 			},
 			UpdateFunc: func(_ interface{}, obj interface{}) {
 				if err := handler(obj.(*v1.Namespace)); err != nil {
-					log.Println(err)
-					os.Exit(1)
+					logrus.Fatal(err)
 				}
 			},
 		},

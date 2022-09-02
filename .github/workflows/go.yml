@@ -1,9 +1,6 @@
 name: Go
 
 on:
-  push:
-    branches:
-    - 'feature/*'
   pull_request:
     branches:
     - develop
@@ -18,13 +15,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v2
       with:
-        go-version: 1.16
+        go-version: 1.18
 
-    - name: gotest
+    - name: Set up gotest CLI
       run: curl https://gotest-release.s3.amazonaws.com/gotest_linux > gotest && chmod +x gotest
 
     - name: Build
       run: go build -v ./...
 
-    - name: Test
+    - name: Run tests
       run: ./gotest -v ./...

@@ -28,20 +28,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/cenkalti/backoff"
+	"github.com/doddle/registry-creds/k8sutil"
+	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
-	"github.com/upmc-enterprises/registry-creds/k8sutil"
-	v1 "k8s.io/client-go/pkg/api/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func init() {
+	// TODO: this is so bad as a global :(
+	// log.SetFormatter(&log.JSONFormatter{})
+	log.SetOutput(os.Stdout)
+	log.SetReportCaller(true)
+
+	log.SetFormatter(&log.TextFormatter{
+		CallerPrettyfier: func(f *runtime.Frame) (string, string) {
+			filename := path.Base(f.File)
+			return fmt.Sprintf("%s()", f.Function), fmt.Sprintf("%s:%d", filename, f.Line)
+		},
+	})
+}
 
 const (
 	// Retry Types
@@ -91,7 +108,7 @@ type registryAuth struct {
 }
 
 type controller struct {
-	k8sutil   *k8sutil.K8sutilInterface
+	k8sutil   *k8sutil.KubeUtilInterface
 	ecrClient ecrInterface
 }
 
@@ -119,11 +136,9 @@ func newEcrClient() ecrInterface {
 }
 
 func (c *controller) getECRAuthorizationKey() ([]AuthToken, error) {
-
 	var tokens []AuthToken
-	var regIds []*string
-	regIds = make([]*string, len(awsAccountIDs))
 
+	regIds := make([]*string, len(awsAccountIDs))
 	for i, awsAccountID := range awsAccountIDs {
 		regIds[i] = aws.String(awsAccountID)
 	}
@@ -137,7 +152,7 @@ func (c *controller) getECRAuthorizationKey() ([]AuthToken, error) {
 	if err != nil {
 		// Print the error, cast err to awserr.Error to get the Code and
 		// Message from an error.
-		logrus.Println(err.Error())
+		log.Println(err.Error())
 		return []AuthToken{}, err
 	}
 
@@ -146,14 +161,14 @@ func (c *controller) getECRAuthorizationKey() ([]AuthToken, error) {
 			AccessToken: *auth.AuthorizationToken,
 			Endpoint:    *auth.ProxyEndpoint,
 		})
-
 	}
+
 	return tokens, nil
 }
 
 func generateSecretObj(tokens []AuthToken, isJSONCfg bool, secretName string) (*v1.Secret, error) {
 	secret := &v1.Secret{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: secretName,
 		},
 	}
@@ -167,16 +182,14 @@ func generateSecretObj(tokens []AuthToken, isJSONCfg bool, secretName string) (*
 		}
 		configJSON, err := json.Marshal(dockerJSON{Auths: auths})
 		if err != nil {
-			return secret, nil
+			return secret, err
 		}
 		secret.Data = map[string][]byte{".dockerconfigjson": configJSON}
 		secret.Type = "kubernetes.io/dockerconfigjson"
-	} else {
-		if len(tokens) == 1 {
-			secret.Data = map[string][]byte{
-				".dockercfg": []byte(fmt.Sprintf(dockerCfgTemplate, tokens[0].Endpoint, tokens[0].AccessToken))}
-			secret.Type = "kubernetes.io/dockercfg"
-		}
+	} else if len(tokens) == 1 {
+		secret.Data = map[string][]byte{
+			".dockercfg": []byte(fmt.Sprintf(dockerCfgTemplate, tokens[0].Endpoint, tokens[0].AccessToken))}
+		secret.Type = "kubernetes.io/dockercfg"
 	}
 	return secret, nil
 }
@@ -207,33 +220,33 @@ func getSecretGenerators(c *controller) []SecretGenerator {
 }
 
 func (c *controller) processNamespace(namespace *v1.Namespace, secret *v1.Secret) error {
-	log := logrus.WithField("function", "processNamespace")
+	logw := log.WithField("function", "processNamespace")
 	// Check if the secret exists for the namespace
-	log.Debugf("checking for secret %s in namespace %s", secret.Name, namespace.GetName())
+	logw.Debugf("checking for secret %s in namespace %s", secret.Name, namespace.GetName())
 	_, err := c.k8sutil.GetSecret(namespace.GetName(), secret.Name)
 
 	if err != nil {
-		log.Debugf("Could not find secret %s in namespace %s; will try to create it", secret.Name, namespace.GetName())
+		logw.Debugf("Could not find secret %s in namespace %s; will try to create it", secret.Name, namespace.GetName())
 		// Secret not found, create
 		err := c.k8sutil.CreateSecret(namespace.GetName(), secret)
 		if err != nil {
 			return fmt.Errorf("could not create Secret: %v", err)
 		}
-		log.Infof("Created new secret %s in namespace %s", secret.Name, namespace.GetName())
+		logw.Infof("Created new secret %s in namespace %s", secret.Name, namespace.GetName())
 	} else {
 		// Existing secret needs updated
-		log.Debugf("Found secret %s in namespace %s; will try to update it", secret.Name, namespace.GetName())
+		logw.Debugf("Found secret %s in namespace %s; will try to update it", secret.Name, namespace.GetName())
 		err := c.k8sutil.UpdateSecret(namespace.GetName(), secret)
 		if err != nil {
 			return fmt.Errorf("could not update Secret: %v", err)
 		}
-		log.Infof("Updated secret %s in namespace %s", secret.Name, namespace.GetName())
+		logw.Infof("Updated secret %s in namespace %s", secret.Name, namespace.GetName())
 	}
 
 	// Check if ServiceAccount exists
 	serviceAccount, err := c.k8sutil.GetServiceAccount(namespace.GetName(), "default")
 	if err != nil {
-		log.Errorf("error getting service account default in namespace %s: %s", namespace.GetName(), err)
+		logw.Errorf("error getting service account default in namespace %s: %s", namespace.GetName(), err)
 		return fmt.Errorf("could not get ServiceAccounts: %v", err)
 	}
 
@@ -252,10 +265,10 @@ func (c *controller) processNamespace(namespace *v1.Namespace, secret *v1.Secret
 		serviceAccount.ImagePullSecrets = append(serviceAccount.ImagePullSecrets, v1.LocalObjectReference{Name: secret.Name})
 	}
 
-	log.Infof("Updating ServiceAccount %s in namespace %s", serviceAccount.Name, namespace.GetName())
+	logw.Infof("Updating ServiceAccount %s in namespace %s", serviceAccount.Name, namespace.GetName())
 	err = c.k8sutil.UpdateServiceAccount(namespace.GetName(), serviceAccount)
 	if err != nil {
-		log.Errorf("error updating ServiceAccount %s in namespace %s: %s", serviceAccount.Name, namespace.GetName(), err)
+		logw.Errorf("error updating ServiceAccount %s in namespace %s: %s", serviceAccount.Name, namespace.GetName(), err)
 		return fmt.Errorf("could not update ServiceAccount: %v", err)
 	}
 
@@ -269,29 +282,29 @@ func (c *controller) generateSecrets() []*v1.Secret {
 	maxTries := RetryCfg.NumberOfRetries + 1
 	for _, secretGenerator := range secretGenerators {
 		resetRetryTimer()
-		//logrus.Infof("------------------ [%s] ------------------\n", secretGenerator.SecretName)
 
 		var newTokens []AuthToken
 		tries := 0
 		for {
 			tries++
-			logrus.Infof("Getting secret; try #%d of %d", tries, maxTries)
+			log.Infof("Getting secret; try #%d of %d", tries, maxTries)
 			tokens, err := secretGenerator.TokenGenFxn()
 			if err != nil {
 				if tries < maxTries {
 					delayDuration := nextRetryDuration()
 					if delayDuration == backoff.Stop {
-						logrus.Errorf("Error getting secret for provider %s. Retry timer exceeded max tries/duration; will not try again until the next refresh cycle. [Err: %s]", secretGenerator.SecretName, err)
+						log.Errorf("Error getting secret for provider %s. Retry timer exceeded max tries/duration; will not try again until the next refresh cycle. [Err: %s]", secretGenerator.SecretName, err)
 						break
 					}
-					logrus.Errorf("Error getting secret for provider %s. Will try again after %f seconds. [Err: %s]", secretGenerator.SecretName, delayDuration.Seconds(), err)
+					log.Errorf("Error getting secret for provider %s. Will try again after %f seconds. [Err: %s]", secretGenerator.SecretName, delayDuration.Seconds(), err)
 					<-time.After(delayDuration)
 					continue
 				}
-				logrus.Errorf("Error getting secret for provider %s. Tried %d time(s); will not try again until the next refresh cycle. [Err: %s]", secretGenerator.SecretName, tries, err)
+				log.Errorf("Error getting secret for provider %s. Tried %d time(s); will not try again until the next refresh cycle. [Err: %s]", secretGenerator.SecretName, tries, err)
+				// os.Exit(1)
 				break
 			} else {
-				logrus.Infof("Successfully got secret for provider %s after trying %d time(s)", secretGenerator.SecretName, tries)
+				log.Infof("Successfully got secret for provider %s after trying %d time(s)", secretGenerator.SecretName, tries)
 				newTokens = tokens
 				break
 			}
@@ -299,7 +312,7 @@ func (c *controller) generateSecrets() []*v1.Secret {
 
 		newSecret, err := generateSecretObj(newTokens, secretGenerator.IsJSONCfg, secretGenerator.SecretName)
 		if err != nil {
-			logrus.Errorf("Error generating secret for provider %s. Skipping secret provider until the next refresh cycle! [Err: %s]", secretGenerator.SecretName, err)
+			log.Errorf("Error generating secret for provider %s. Skipping secret provider until the next refresh cycle! [Err: %s]", secretGenerator.SecretName, err)
 		} else {
 			secrets = append(secrets, newSecret)
 		}
@@ -313,10 +326,8 @@ func SetupRetryTimer() {
 	switch RetryCfg.Type {
 	case retryTypeSimple:
 		simpleBackoff = backoff.NewConstantBackOff(delayDuration)
-		break
 	case retryTypeExponential:
 		exponentialBackoff = backoff.NewExponentialBackOff()
-		break
 	}
 }
 
@@ -324,10 +335,8 @@ func resetRetryTimer() {
 	switch RetryCfg.Type {
 	case retryTypeSimple:
 		simpleBackoff.Reset()
-		break
 	case retryTypeExponential:
 		exponentialBackoff.Reset()
-		break
 	}
 }
 
@@ -356,22 +365,22 @@ func validateParams() {
 	}
 	// ensure command line values are valid
 	if RetryCfg.Type != retryTypeSimple && RetryCfg.Type != retryTypeExponential {
-		logrus.Errorf("Unknown Retry Timer type '%s'! Defaulting to %s", RetryCfg.Type, defaultTokenGenRetryType)
+		log.Errorf("Unknown Retry Timer type '%s'! Defaulting to %s", RetryCfg.Type, defaultTokenGenRetryType)
 		RetryCfg.Type = defaultTokenGenRetryType
 	}
 	if RetryCfg.NumberOfRetries < 0 {
-		logrus.Errorf("Cannot use a negative value for the number of retries! Defaulting to %d", defaultTokenGenRetries)
+		log.Errorf("Cannot use a negative value for the number of retries! Defaulting to %d", defaultTokenGenRetries)
 		RetryCfg.NumberOfRetries = defaultTokenGenRetries
 	}
 	if RetryCfg.RetryDelayInSeconds < 0 {
-		logrus.Errorf("Cannot use a negative value for the retry delay in seconds! Defaulting to %d", defaultTokenGenRetryDelay)
+		log.Errorf("Cannot use a negative value for the retry delay in seconds! Defaulting to %d", defaultTokenGenRetryDelay)
 		RetryCfg.RetryDelayInSeconds = defaultTokenGenRetryDelay
 	}
 	// look for overrides in environment variables and use them if they exist and are valid
 	tokenType, ok := os.LookupEnv(tokenGenRetryTypeKey)
 	if ok && len(tokenType) > 0 {
 		if tokenType != retryTypeSimple && tokenType != retryTypeExponential {
-			logrus.Errorf("Unknown Retry Timer type '%s'! Defaulting to %s", tokenType, defaultTokenGenRetryType)
+			log.Errorf("Unknown Retry Timer type '%s'! Defaulting to %s", tokenType, defaultTokenGenRetryType)
 			RetryCfg.Type = defaultTokenGenRetryType
 		} else {
 			RetryCfg.Type = tokenType
@@ -381,10 +390,10 @@ func validateParams() {
 	if ok && len(tokenRetries) > 0 {
 		tokenRetriesInt, err := strconv.Atoi(tokenRetries)
 		if err != nil {
-			logrus.Errorf("Unable to parse value of environment variable %s! [Err: %s]", tokenGenRetriesKey, err)
+			log.Errorf("Unable to parse value of environment variable %s! [Err: %s]", tokenGenRetriesKey, err)
 		} else {
 			if tokenRetriesInt < 0 {
-				logrus.Errorf("Cannot use a negative value for environment variable %s! Defaulting to %d", tokenGenRetriesKey, defaultTokenGenRetries)
+				log.Errorf("Cannot use a negative value for environment variable %s! Defaulting to %d", tokenGenRetriesKey, defaultTokenGenRetries)
 				RetryCfg.NumberOfRetries = defaultTokenGenRetries
 			} else {
 				RetryCfg.NumberOfRetries = tokenRetriesInt
@@ -395,10 +404,10 @@ func validateParams() {
 	if ok && len(tokenRetryDelay) > 0 {
 		tokenRetryDelayInt, err := strconv.Atoi(tokenRetryDelay)
 		if err != nil {
-			logrus.Errorf("Unable to parse value of environment variable %s! [Err: %s]", tokenGenRetryDelayKey, err)
+			log.Errorf("Unable to parse value of environment variable %s! [Err: %s]", tokenGenRetryDelayKey, err)
 		} else {
 			if tokenRetryDelayInt < 0 {
-				logrus.Errorf("Cannot use a negative value for environment variable %s! Defaulting to %d", tokenGenRetryDelayKey, defaultTokenGenRetryDelay)
+				log.Errorf("Cannot use a negative value for environment variable %s! Defaulting to %d", tokenGenRetryDelayKey, defaultTokenGenRetryDelay)
 				RetryCfg.RetryDelayInSeconds = defaultTokenGenRetryDelay
 			} else {
 				RetryCfg.RetryDelayInSeconds = tokenRetryDelayInt
@@ -434,55 +443,53 @@ func stringSliceContains(stringSlice []string, searchString string) bool {
 }
 
 func handler(c *controller, ns *v1.Namespace) error {
-	//fmt.Println(c.k8sutil.ExcludedNamespaces)
 	namespace := ns.GetName()
 	if stringSliceContains(c.k8sutil.ExcludedNamespaces, namespace) {
-		logrus.Infof("---------- handler( namespace: %s excluded)", namespace)
-		return nil
-	} else {
-		logrus.Infof("---------- handler( namespace: %s started)", namespace)
-		logrus.Infof("generating credentials for namespace %s", namespace)
-		secrets := c.generateSecrets()
-		logrus.Infof("Got %d refreshed credentials for namespace %s", len(secrets), namespace)
-		for _, secret := range secrets {
-			if *argSkipKubeSystem && namespace == "kube-system" {
-				continue
-			}
-			logrus.Infof("Processing secret for namespace %s, secret %s", ns.Name, secret.Name)
-
-			if err := c.processNamespace(ns, secret); err != nil {
-				logrus.Errorf("error processing secret for namespace %s, secret %s: %s", ns.Name, secret.Name, err)
-				return err
-			}
-
-			logrus.Infof("Finished processing secret for namespace %s, secret %s", ns.Name, secret.Name)
-		}
-		logrus.Infof("Finished refreshing credentials for namespace %s", ns.GetName())
+		log.Infof("---------- handler( namespace: %s excluded)", namespace)
 		return nil
 	}
+	log.Infof("---------- handler( namespace: %s started)", namespace)
+	log.Infof("generating credentials for namespace %s", namespace)
+	secrets := c.generateSecrets()
+	log.Infof("Got %d refreshed credentials for namespace %s", len(secrets), namespace)
+	for _, secret := range secrets {
+		if *argSkipKubeSystem && namespace == "kube-system" {
+			continue
+		}
+		log.Infof("Processing secret for namespace %s, secret %s", ns.Name, secret.Name)
+
+		if err := c.processNamespace(ns, secret); err != nil {
+			log.Errorf("error processing secret for namespace %s, secret %s: %s", ns.Name, secret.Name, err)
+			return err
+		}
+
+		log.Infof("Finished processing secret for namespace %s, secret %s", ns.Name, secret.Name)
+	}
+	log.Infof("Finished refreshing credentials for namespace %s", ns.GetName())
+	return nil
 }
 
 func main() {
-	logrus.Info("Starting up...")
+	log.Info("Starting up...")
 	err := flags.Parse(os.Args)
 	if err != nil {
-		logrus.Fatalf("Could not parse command line arguments! [Err: %s]", err)
+		log.Fatalf("Could not parse command line arguments! [Err: %s]", err)
 	}
 
 	validateParams()
 
-	logrus.Info("Using AWS Account: ", strings.Join(awsAccountIDs, ","))
-	logrus.Info("Using AWS Region: ", *argAWSRegion)
-	logrus.Info("Using AWS Assume Role: ", *argAWSAssumeRole)
-	logrus.Info("Refresh Interval (minutes): ", *argRefreshMinutes)
-	logrus.Infof("Retry Timer: %s", RetryCfg.Type)
-	logrus.Info("Token Generation Retries: ", RetryCfg.NumberOfRetries)
-	logrus.Info("Token Generation Retry Delay (seconds): ", RetryCfg.RetryDelayInSeconds)
+	log.Info("Using AWS Account: ", strings.Join(awsAccountIDs, ","))
+	log.Info("Using AWS Region: ", *argAWSRegion)
+	log.Info("Using AWS Assume Role: ", *argAWSAssumeRole)
+	log.Info("Refresh Interval (minutes): ", *argRefreshMinutes)
+	log.Infof("Retry Timer: %s", RetryCfg.Type)
+	log.Info("Token Generation Retries: ", RetryCfg.NumberOfRetries)
+	log.Info("Token Generation Retry Delay (seconds): ", RetryCfg.RetryDelayInSeconds)
 
 	excludedNamespaces := strings.Split(*argExcludedNamespaces, ",")
 	util, err := k8sutil.New(excludedNamespaces)
 	if err != nil {
-		logrus.Error("Could not create k8s client!!", err)
+		log.Error("Could not create k8s client!!", err)
 	}
 
 	ecrClient := newEcrClient()
