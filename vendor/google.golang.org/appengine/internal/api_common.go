@@ -5,9 +5,20 @@
 package internal
 
 import (
+	netcontext "context"
+	"errors"
+	"os"
+
 	"github.com/golang/protobuf/proto"
-	netcontext "golang.org/x/net/context"
 )
+
+type ctxKey string
+
+func (c ctxKey) String() string {
+	return "appengine context key: " + string(c)
+}
+
+var errNotAppEngineContext = errors.New("not an App Engine context")
 
 type CallOverrideFunc func(ctx netcontext.Context, service, method string, in, out proto.Message) error
 
@@ -50,6 +61,18 @@ func WithAppIDOverride(ctx netcontext.Context, appID string) netcontext.Context 
 	return netcontext.WithValue(ctx, &appIDOverrideKey, appID)
 }
 
+var apiHostOverrideKey = ctxKey("holds a string, being the alternate API_HOST")
+
+func withAPIHostOverride(ctx netcontext.Context, apiHost string) netcontext.Context {
+	return netcontext.WithValue(ctx, apiHostOverrideKey, apiHost)
+}
+
+var apiPortOverrideKey = ctxKey("holds a string, being the alternate API_PORT")
+
+func withAPIPortOverride(ctx netcontext.Context, apiPort string) netcontext.Context {
+	return netcontext.WithValue(ctx, apiPortOverrideKey, apiPort)
+}
+
 var namespaceKey = "holds the namespace string"
 
 func withNamespace(ctx netcontext.Context, ns string) netcontext.Context {
@@ -77,10 +100,42 @@ func Logf(ctx netcontext.Context, level int64, format string, args ...interface{
 		f(level, format, args...)
 		return
 	}
-	logf(fromContext(ctx), level, format, args...)
+	c := fromContext(ctx)
+	if c == nil {
+		panic(errNotAppEngineContext)
+	}
+	logf(c, level, format, args...)
 }
 
 // NamespacedContext wraps a Context to support namespaces.
 func NamespacedContext(ctx netcontext.Context, namespace string) netcontext.Context {
 	return withNamespace(ctx, namespace)
+}
+
+// SetTestEnv sets the env variables for testing background ticket in Flex.
+func SetTestEnv() func() {
+	var environ = []struct {
+		key, value string
+	}{
+		{"GAE_LONG_APP_ID", "my-app-id"},
+		{"GAE_MINOR_VERSION", "067924799508853122"},
+		{"GAE_MODULE_INSTANCE", "0"},
+		{"GAE_MODULE_NAME", "default"},
+		{"GAE_MODULE_VERSION", "20150612t184001"},
+	}
+
+	for _, v := range environ {
+		old := os.Getenv(v.key)
+		os.Setenv(v.key, v.value)
+		v.value = old
+	}
+	return func() { // Restore old environment after the test completes.
+		for _, v := range environ {
+			if v.value == "" {
+				os.Unsetenv(v.key)
+				continue
+			}
+			os.Setenv(v.key, v.value)
+		}
+	}
 }

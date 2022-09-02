@@ -2,6 +2,7 @@
 // Use of this source code is governed by the Apache 2.0
 // license that can be found in the LICENSE file.
 
+//go:build appengine
 // +build appengine
 
 package internal
@@ -22,14 +23,20 @@ import (
 
 var contextKey = "holds an appengine.Context"
 
+// fromContext returns the App Engine context or nil if ctx is not
+// derived from an App Engine context.
 func fromContext(ctx netcontext.Context) appengine.Context {
 	c, _ := ctx.Value(&contextKey).(appengine.Context)
 	return c
 }
 
 // This is only for classic App Engine adapters.
-func ClassicContextFromContext(ctx netcontext.Context) appengine.Context {
-	return fromContext(ctx)
+func ClassicContextFromContext(ctx netcontext.Context) (appengine.Context, error) {
+	c := fromContext(ctx)
+	if c == nil {
+		return nil, errNotAppEngineContext
+	}
+	return c, nil
 }
 
 func withContext(parent netcontext.Context, c appengine.Context) netcontext.Context {
@@ -51,6 +58,10 @@ func IncomingHeaders(ctx netcontext.Context) http.Header {
 		}
 	}
 	return nil
+}
+
+func ReqContext(req *http.Request) netcontext.Context {
+	return WithContext(netcontext.Background(), req)
 }
 
 func WithContext(parent netcontext.Context, req *http.Request) netcontext.Context {
@@ -98,7 +109,7 @@ func Call(ctx netcontext.Context, service, method string, in, out proto.Message)
 	c := fromContext(ctx)
 	if c == nil {
 		// Give a good error message rather than a panic lower down.
-		return errors.New("not an App Engine context")
+		return errNotAppEngineContext
 	}
 
 	// Apply transaction modifications if we're in a transaction.
@@ -134,8 +145,8 @@ func Call(ctx netcontext.Context, service, method string, in, out proto.Message)
 	return err
 }
 
-func handleHTTP(w http.ResponseWriter, r *http.Request) {
-	panic("handleHTTP called; this should be impossible")
+func Middleware(next http.Handler) http.Handler {
+	panic("Middleware called; this should be impossible")
 }
 
 func logf(c appengine.Context, level int64, format string, args ...interface{}) {
