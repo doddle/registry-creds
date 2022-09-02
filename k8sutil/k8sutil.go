@@ -68,6 +68,26 @@ func findKubeConfig() string {
 	return kubeconfig
 }
 
+type LegacyInterfaceWrapper struct {
+	*kubernetes.Clientset
+}
+
+func (f LegacyInterfaceWrapper) Secrets(namespace string) coreType.SecretInterface {
+	return f.CoreV1().Secrets(namespace)
+}
+
+func (f LegacyInterfaceWrapper) Namespaces() coreType.NamespaceInterface {
+	return f.CoreV1().Namespaces()
+}
+
+func (f LegacyInterfaceWrapper) ServiceAccounts(namespace string) coreType.ServiceAccountInterface {
+	return f.CoreV1().ServiceAccounts(namespace)
+}
+
+func (f LegacyInterfaceWrapper) Core() coreType.CoreV1Interface {
+	return f.CoreV1()
+}
+
 func newKubeClient() (KubeInterface, error) {
 	var client *kubernetes.Clientset
 
@@ -103,7 +123,9 @@ func newKubeClient() (KubeInterface, error) {
 		}
 	}
 
-	return client, nil
+	return LegacyInterfaceWrapper{
+		client,
+	}, nil
 }
 
 // GetNamespaces returns all namespaces
